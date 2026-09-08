@@ -34,6 +34,21 @@ $patches = @(
     repl = "status: o.b ? 'sched' : 'bye', table: null, left: 0, endsAt: null, paused: false,"
     done = "left: 0, endsAt: null, paused: false,"
   },
+  # upgrade steps for files patched by an earlier version of this script (optional: skipped on fresh exports)
+  @{
+    name = 'timer v1->v2: migrated flag'
+    optional = $true
+    find = 'let changed = false; const now = Date.now();'
+    repl = 'let changed = false, migrated = false; const now = Date.now();'
+    done = 'let changed = false, migrated = false;'
+  },
+  @{
+    name = 'timer v1->v2: mark legacy games as migrated'
+    optional = $true
+    find = 'if (!g.endsAt) return { ...g, endsAt: now + Math.max(0, g.left) * 1000 };'
+    repl = 'if (!g.endsAt) { migrated = true; return { ...g, endsAt: now + Math.max(0, g.left) * 1000 }; }'
+    done = 'if (!g.endsAt) { migrated = true;'
+  },
   @{
     name = 'timer: tick derives left from wall-clock endsAt'
     find = @'
@@ -44,17 +59,26 @@ $patches = @(
         if (left > 0) return { ...g, left };
 '@
     repl = @'
-      let changed = false; const now = Date.now();
+      let changed = false, migrated = false; const now = Date.now();
       let games = st.games.map(g => {
         if (g.status !== 'live' || g.paused) return g; changed = true;
         // Wall-clock anchored: survives background, refresh and multi-device sync.
         // endsAt is the source of truth while running; left is derived for display.
-        if (!g.endsAt) return { ...g, endsAt: now + Math.max(0, g.left) * 1000 };
+        if (!g.endsAt) { migrated = true; return { ...g, endsAt: now + Math.max(0, g.left) * 1000 }; }
         const left = Math.max(0, Math.ceil((g.endsAt - now) / 1000));
         if (left === g.left) return g;
         if (left > 0) return { ...g, left };
 '@
     done = 'const left = Math.max(0, Math.ceil((g.endsAt - now) / 1000));'
+  },
+  @{
+    name = 'timer: games started before the fix push their endsAt once'
+    find = '      if (!changed) { this.tickOnly = false; return null; }'
+    repl = @'
+      if (!changed) { this.tickOnly = false; return null; }
+      if (migrated) this.tickOnly = false; // sync endsAt for games that were live before the timer fix
+'@
+    done = 'if (migrated) this.tickOnly = false;'
   },
   @{
     name = 'timer: start sets endsAt'
@@ -129,6 +153,7 @@ foreach ($p in $patches) {
   $repl = $p.repl -replace "`r`n", "`n"
   if ((Count-Occurrences $tpl $p.done) -gt 0) { Write-Host "  = already: $($p.name)"; continue }
   $c = Count-Occurrences $tpl $find
+  if ($c -eq 0 -and $p.optional) { Write-Host "  - n/a:     $($p.name)"; continue }
   if ($c -ne 1) { throw "anchor for '$($p.name)' found $c times (expected 1). The export changed; update scripts/patch-export.ps1." }
   $tpl = $tpl.Replace($find, $repl)
   Write-Host "  + applied: $($p.name)"
