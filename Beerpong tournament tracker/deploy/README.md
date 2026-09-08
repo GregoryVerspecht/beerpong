@@ -2,6 +2,11 @@
 
 `index.html` is the complete, self-contained web app (fonts + runtime inlined). No build step. Deploying = putting this one file on a static host.
 
+## Live
+- Web (GitHub Pages, auto-deploys on push to `main`): https://gregoryverspecht.github.io/beerpong/
+- iOS TestFlight public link: https://testflight.apple.com/join/ymCT9rvQ
+- New iOS build: bump `version` in the root `package.json`, merge `main` into `prod`, push. The workflow builds, uploads and submits to the external group.
+
 ## Fastest: Vercel (recommended)
 
 Tell Claude Code:
