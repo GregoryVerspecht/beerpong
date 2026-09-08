@@ -34,6 +34,18 @@ jobs:
         run: |
           mkdir -p www
           cp "$WEB_DIR/index.html" www/index.html
+          # Inject the native shim (haptics, web audio resume, zoom cap) as the
+          # first script in <head>, before the bundle loader runs.
+          node --check native/ios-shim.js
+          node -e '
+            const fs = require("fs");
+            const html = fs.readFileSync("www/index.html", "utf8");
+            const shim = fs.readFileSync("native/ios-shim.js", "utf8");
+            const tag = "<script>\n" + shim + "\n</script>\n";
+            if (!/<head>/i.test(html)) throw new Error("no <head> in index.html");
+            fs.writeFileSync("www/index.html", html.replace(/<head>/i, "<head>\n" + tag));
+          '
+          grep -c "Injected into www/index.html" www/index.html
 
       - name: Add iOS platform and sync web assets
         run: |
@@ -41,6 +53,13 @@ jobs:
           # Apple requires MinimumOSVersion >= 15.0 from spring 2027; Capacitor defaults to 14.0
           sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = 14\.0/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' ios/App/App.xcodeproj/project.pbxproj
           sed -i '' -E "s/platform :ios, '14\.0'/platform :ios, '15.0'/" ios/App/Podfile
+          # Audio session: play web audio even when the ringer switch is on
+          # mute, and keep mixing with the user's music.
+          # (perl, not BSD sed: macOS sed cannot emit newlines in replacements)
+          AD=ios/App/App/AppDelegate.swift
+          perl -0pi -e 's/^import Capacitor$/import Capacitor\nimport AVFoundation/m' "$AD"
+          perl -0pi -e 's|// Override point for customization after application launch\.|try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])\n        try? AVAudioSession.sharedInstance().setActive(true)|' "$AD"
+          grep -n "AVAudioSession" "$AD"
           # Remove alpha channel — iOS requires fully opaque app icons
           # sips is macOS-native; JPEG roundtrip composites alpha against white
           sips -s format jpeg assets/icon-only.png --out /tmp/icon-flat.jpg
