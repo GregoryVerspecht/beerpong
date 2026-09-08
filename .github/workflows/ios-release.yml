@@ -37,6 +37,17 @@ jobs:
           # Inject the native shim (haptics, web audio resume, zoom cap) as the
           # first script in <head>, before the bundle loader runs.
           node --check native/ios-shim.js
+          # Validate the bundle JSON (browsers reject raw newlines in JSON strings)
+          node -e '
+            const fs = require("fs");
+            const html = fs.readFileSync("www/index.html", "utf8");
+            for (const kind of ["template", "manifest"]) {
+              const m = html.match(new RegExp("<script type=\"__bundler/" + kind + "\"[^>]*>([\\s\\S]*?)</script>"));
+              if (!m) throw new Error("missing __bundler/" + kind + " script");
+              JSON.parse(m[1]);
+              console.log(kind, "JSON OK,", m[1].length, "chars");
+            }
+          '
           node -e '
             const fs = require("fs");
             const html = fs.readFileSync("www/index.html", "utf8");

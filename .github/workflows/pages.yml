@@ -25,6 +25,18 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Validate bundle JSON (browsers reject raw newlines in JSON strings)
+        run: |
+          node -e '
+            const fs = require("fs");
+            const html = fs.readFileSync("Beerpong tournament tracker/deploy/index.html", "utf8");
+            for (const kind of ["template", "manifest"]) {
+              const m = html.match(new RegExp("<script type=\"__bundler/" + kind + "\"[^>]*>([\\s\\S]*?)</script>"));
+              if (!m) throw new Error("missing __bundler/" + kind + " script");
+              JSON.parse(m[1]);
+              console.log(kind, "JSON OK,", m[1].length, "chars");
+            }
+          '
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
