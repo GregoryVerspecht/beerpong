@@ -38,6 +38,9 @@ jobs:
       - name: Add iOS platform and sync web assets
         run: |
           npx cap add ios
+          # Apple requires MinimumOSVersion >= 15.0 from spring 2027; Capacitor defaults to 14.0
+          sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = 14\.0/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' ios/App/App.xcodeproj/project.pbxproj
+          sed -i '' -E "s/platform :ios, '14\.0'/platform :ios, '15.0'/" ios/App/Podfile
           # Remove alpha channel — iOS requires fully opaque app icons
           # sips is macOS-native; JPEG roundtrip composites alpha against white
           sips -s format jpeg assets/icon-only.png --out /tmp/icon-flat.jpg
@@ -119,4 +122,5 @@ jobs:
         run: |
           app-store-connect publish \
             --path build/ios/ipa/*.ipa \
-            --testflight
+            --testflight \
+            --max-build-processing-wait 25
