@@ -30,3 +30,15 @@ create policy "open" on tournaments for all using (true) with check (true);
 
 ## Source
 `index.html` is a bundled export from the design project; edit there and re-export, or edit `index.html` directly (it is plain HTML + JS).
+
+**After every re-export, run the patch script** — it re-applies fixes that live only in this repo until they are ported to the design source:
+
+```powershell
+powershell -File scripts/patch-export.ps1
+```
+
+It decodes the bundle, applies the patches below (skipping ones already present), re-encodes it safely and validates the JSON. A missing anchor means the export changed around that spot: update the anchor in the script rather than skipping it.
+
+Patches it carries:
+- iOS: form fields at 16px so Safari does not auto-zoom on focus.
+- Timer: games store a wall-clock `endsAt`; `left` is derived from it each tick. Survives backgrounding, refresh and multi-device sync. Pause freezes `left` and clears `endsAt`; resume, start and +1 min re-anchor it.
