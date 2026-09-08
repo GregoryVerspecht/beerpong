@@ -180,6 +180,44 @@ const busyTeams = new Set(st.games.filter(g => g.status === 'live' || g.status =
     done = 'TEAM STILL PLAYING'
   },
   @{
+    name = 'schedule: round-robin order so consecutive games use different teams'
+    find = @'
+  schedule(teams, s) {
+    const out = [];
+    for (const g of this.letters(s)) {
+      const ts = teams.filter(t => t.group === g);
+      for (let i = 0; i < ts.length; i++) for (let j = i + 1; j < ts.length; j++) out.push(this.mkGame({ id: 'g' + g + i + j, a: ts[i].id, b: ts[j].id, group: g }, s));
+    }
+    return out;
+  }
+'@
+    repl = @'
+  schedule(teams, s) {
+    // Round-robin (circle method): within a round no team plays twice, so back-to-back
+    // games on parallel tables never wait on the same team. Rounds are interleaved
+    // across groups so all groups progress together. Game ids stay 'g' + group + i + j.
+    const rounds = [];
+    for (const g of this.letters(s)) {
+      const ts = teams.filter(t => t.group === g);
+      const idx = ts.map((_, i) => i); if (idx.length % 2) idx.push(-1);
+      const n = idx.length;
+      for (let r = 0; r < n - 1; r++) {
+        const games = [];
+        for (let k = 0; k < n / 2; k++) {
+          const i = idx[k], j = idx[n - 1 - k]; if (i < 0 || j < 0) continue;
+          const lo = Math.min(i, j), hi = Math.max(i, j);
+          games.push(this.mkGame({ id: 'g' + g + lo + hi, a: ts[lo].id, b: ts[hi].id, group: g }, s));
+        }
+        (rounds[r] = rounds[r] || []).push(...games);
+        idx.splice(1, 0, idx.pop());
+      }
+    }
+    return rounds.flat();
+  }
+'@
+    done = 'return rounds.flat();'
+  },
+  @{
     name = 'timer: reopen clears endsAt (game reopens paused)'
     find = "status: x.left > 0 ? 'live' : 'sudden', paused: true, reason: '' }"
     repl = "status: x.left > 0 ? 'live' : 'sudden', paused: true, endsAt: null, reason: '' }"
