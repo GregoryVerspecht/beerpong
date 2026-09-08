@@ -1,0 +1,122 @@
+name: iOS App Store Release
+
+on:
+  push:
+    branches: [prod]
+  workflow_dispatch:
+
+env:
+  BUNDLE_ID: com.gvtech.pongcup
+  WEB_DIR: Beerpong tournament tracker/deploy
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Capacitor dependencies
+        run: npm install
+
+      - name: Prepare www directory
+        run: |
+          mkdir -p www
+          cp "$WEB_DIR/index.html" www/index.html
+
+      - name: Add iOS platform and sync web assets
+        run: |
+          npx cap add ios
+          # Remove alpha channel — iOS requires fully opaque app icons
+          # sips is macOS-native; JPEG roundtrip composites alpha against white
+          sips -s format jpeg assets/icon-only.png --out /tmp/icon-flat.jpg
+          sips -s format png /tmp/icon-flat.jpg --out assets/icon-only.png
+          npx capacitor-assets generate --ios
+          npx cap sync ios
+          # Set version, build number, and export compliance after sync
+          APP_VERSION=$(node -p "require('./package.json').version")
+          # Build number must strictly increase and be unique per upload — including
+          # across workflow RE-RUNS (which keep the same run number). Folding in the
+          # run attempt keeps it monotonic on both new runs and re-runs.
+          BUILD_NUMBER=$(( GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT ))
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" ios/App/App/Info.plist || \
+          /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption bool false" ios/App/App/Info.plist
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios/App
+          pod install
+
+      - name: Install Codemagic CLI tools
+        run: pip3 install codemagic-cli-tools --break-system-packages
+
+      - name: Initialize keychain
+        run: keychain initialize
+
+      - name: Create distribution certificate
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          CERTIFICATE_PRIVATE_KEY: ${{ secrets.CERTIFICATE_PRIVATE_KEY }}
+        run: |
+          # Reuse existing cert if available; only create when none exist
+          app-store-connect certificates list \
+            --type IOS_DISTRIBUTION \
+            --certificate-key @env:CERTIFICATE_PRIVATE_KEY \
+            --save \
+          || app-store-connect certificates create \
+            --type IOS_DISTRIBUTION \
+            --certificate-key @env:CERTIFICATE_PRIVATE_KEY \
+            --save
+
+      - name: Add certificates to keychain
+        run: keychain add-certificates
+
+      - name: Fetch provisioning profile (creates if missing)
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          CERTIFICATE_PRIVATE_KEY: ${{ secrets.CERTIFICATE_PRIVATE_KEY }}
+        run: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --certificate-key @env:CERTIFICATE_PRIVATE_KEY \
+            --create
+
+      - name: Set up code signing
+        run: xcode-project use-profiles
+
+      - name: Build IPA
+        run: |
+          xcode-project build-ipa \
+            --workspace ios/App/App.xcworkspace \
+            --scheme App
+
+      - name: Show build logs on failure
+        if: failure()
+        run: cat /tmp/xcodebuild_logs/App.log 2>/dev/null | tail -100 || true
+
+      - name: Upload to TestFlight
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          app-store-connect publish \
+            --path build/ios/ipa/*.ipa \
+            --testflight
