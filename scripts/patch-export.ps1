@@ -132,6 +132,54 @@ mergeRemote(d) {
     done = 'this.setState(this.mergeRemote(m.data))'
   },
   @{
+    name = 'tables: a team already playing cannot be started at another table'
+    find = 'const startOpts = g => freeTables.map('
+    repl = @'
+const busyTeams = new Set(st.games.filter(g => g.status === 'live' || g.status === 'sudden').flatMap(g => [g.a, g.b]));
+    const teamBusy = g => busyTeams.has(g.a) || busyTeams.has(g.b);
+    const startOpts = g => teamBusy(g) ? [] : freeTables.map(
+'@
+    done = 'const startOpts = g => teamBusy(g) ? [] : freeTables.map('
+  },
+  @{
+    name = 'tables: "up next" is the first scheduled game whose teams are free'
+    find = "const nextGames = st.games.filter(g => g.status === 'sched').slice(0, 8).map((g, i) => { const isCall = i === 0 && freeTables.length > 0; return { ...deco(g), startOptions: startOpts(g), isCall,"
+    repl = "const callIdx = st.games.filter(g => g.status === 'sched').slice(0, 8).findIndex(g => !teamBusy(g)); const nextGames = st.games.filter(g => g.status === 'sched').slice(0, 8).map((g, i) => { const isCall = i === callIdx && freeTables.length > 0; return { ...deco(g), startOptions: startOpts(g), isCall, teamBusy: teamBusy(g),"
+    done = "const isCall = i === callIdx && freeTables.length > 0;"
+  },
+  @{
+    name = 'tables: TV call-up follows the same rule'
+    find = 'const callGame = freeTables.length && nextGames.length ? nextGames[0] : null;'
+    repl = 'const callGame = freeTables.length ? nextGames.find(g => g.isCall) || null : null;'
+    done = 'nextGames.find(g => g.isCall)'
+  },
+  @{
+    name = 'tables: call-up notification skips games whose team is still playing'
+    find = "const free = st.tables.find(t => !busy.has(t.id)), next = st.games.find(g => g.status === 'sched');"
+    repl = @'
+const busyTeams = new Set(st.games.filter(g => g.status === 'live' || g.status === 'sudden').flatMap(g => [g.a, g.b]));
+    const free = st.tables.find(t => !busy.has(t.id)), next = st.games.find(g => g.status === 'sched' && !busyTeams.has(g.a) && !busyTeams.has(g.b));
+'@
+    done = "next = st.games.find(g => g.status === 'sched' && !busyTeams.has(g.a)"
+  },
+  @{
+    name = 'tables: waiting games show why they cannot start'
+    find = @'
+          <div style="font-size:11px;color:#a8a194;letter-spacing:.1em">{{ g.stageLabel }}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          <sc-for list="{{ g.startOptions }}" as="o" hint-placeholder-count="2">
+'@
+    repl = @'
+          <div style="font-size:11px;color:#a8a194;letter-spacing:.1em">{{ g.stageLabel }}</div>
+          <sc-if value="{{ g.teamBusy }}" hint-placeholder-val="{{ false }}"><div style="font-size:10px;font-weight:700;letter-spacing:.14em;color:#ff7a6b">TEAM STILL PLAYING</div></sc-if>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          <sc-for list="{{ g.startOptions }}" as="o" hint-placeholder-count="2">
+'@
+    done = 'TEAM STILL PLAYING'
+  },
+  @{
     name = 'timer: reopen clears endsAt (game reopens paused)'
     find = "status: x.left > 0 ? 'live' : 'sudden', paused: true, reason: '' }"
     repl = "status: x.left > 0 ? 'live' : 'sudden', paused: true, endsAt: null, reason: '' }"

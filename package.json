@@ -1,6 +1,6 @@
 {
   "name": "pongcup",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "description": "Pong Cup - beerpong tournament tracker",
   "private": true,
   "scripts": {

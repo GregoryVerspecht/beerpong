@@ -41,4 +41,5 @@ It decodes the bundle, applies the patches below (skipping ones already present)
 
 Patches it carries:
 - iOS: form fields at 16px so Safari does not auto-zoom on focus.
-- Timer: games store a wall-clock `endsAt`; `left` is derived from it each tick. Survives backgrounding, refresh and multi-device sync. Pause freezes `left` and clears `endsAt`; resume, start and +1 min re-anchor it.
+- Timer: games store a wall-clock `endsAt`; `left` is derived from it each tick. Survives backgrounding, refresh and multi-device sync. Pause freezes `left` and clears `endsAt`; resume, start and +1 min re-anchor it. Incoming state from an older client keeps the local `endsAt`.
+- Tables: a team that is in a live game cannot be started at another table. "Up next", the TV call-up and the notification pick the first scheduled game whose teams are both free; waiting games show "TEAM STILL PLAYING".
