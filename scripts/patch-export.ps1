@@ -99,6 +99,39 @@ $patches = @(
     done = "addMinute: () => this.upd(id, x => { const rem ="
   },
   @{
+    name = 'sync: keep local endsAt when an older client sends state without it'
+    find = 'persistData() { const d = {};'
+    repl = @'
+mergeRemote(d) {
+    // Clients running the pre-timer-fix build push games without endsAt. Keep ours
+    // for a running game so their stale "left" cannot restart the clock.
+    if (!d || !Array.isArray(d.games)) return d;
+    const mine = this.state.games || [];
+    return { ...d, games: d.games.map(g => { const l = mine.find(x => x.id === g.id); return l && l.endsAt && !g.endsAt && g.status === 'live' && !g.paused ? { ...g, endsAt: l.endsAt } : g; }) };
+  }
+  persistData() { const d = {};
+'@
+    done = 'mergeRemote(d) {'
+  },
+  @{
+    name = 'sync: initial cloud pull goes through mergeRemote'
+    find = 'this.setState(row.data)'
+    repl = 'this.setState(this.mergeRemote(row.data))'
+    done = 'this.setState(this.mergeRemote(row.data))'
+  },
+  @{
+    name = 'sync: cloud poll goes through mergeRemote'
+    find = 'this.setState(r.data)'
+    repl = 'this.setState(this.mergeRemote(r.data))'
+    done = 'this.setState(this.mergeRemote(r.data))'
+  },
+  @{
+    name = 'sync: same-device broadcast goes through mergeRemote'
+    find = 'this.setState(m.data)'
+    repl = 'this.setState(this.mergeRemote(m.data))'
+    done = 'this.setState(this.mergeRemote(m.data))'
+  },
+  @{
     name = 'timer: reopen clears endsAt (game reopens paused)'
     find = "status: x.left > 0 ? 'live' : 'sudden', paused: true, reason: '' }"
     repl = "status: x.left > 0 ? 'live' : 'sudden', paused: true, endsAt: null, reason: '' }"
