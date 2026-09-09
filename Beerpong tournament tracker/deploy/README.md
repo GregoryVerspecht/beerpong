@@ -3,7 +3,7 @@
 Single-file web app: group stage → knockout, live scoring on multiple tables, timers, player stats, TV mode, multi-device sync via Supabase.
 
 ## Live
-- Web (GitHub Pages, auto-deploys on push to `main`): https://cup-pong.gv-tech.eu/ (custom domain; falls back to https://gregoryverspecht.github.io/beerpong/ until DNS for `cup-pong.gv-tech.eu` is verified)
+- Web (GitHub Pages, auto-deploys on push to `main`): https://pong-cup.gv-tech.eu/ (custom domain; falls back to https://gregoryverspecht.github.io/beerpong/ until DNS for `pong-cup.gv-tech.eu` is verified)
 - iOS TestFlight public link: https://testflight.apple.com/join/ymCT9rvQ
 
 ## Deploy
@@ -14,9 +14,9 @@ Single-file web app: group stage → knockout, live scoring on multiple tables, 
 
 **Vercel / Netlify** — import the repo, no build step, output dir `.` (`vercel.json` included).
 
-**Custom domain (`cup-pong.gv-tech.eu`)** — set in the repo's Pages settings and in the `CNAME` file in this folder. At the DNS provider for `gv-tech.eu`, add:
+**Custom domain (`pong-cup.gv-tech.eu`)** — set in the repo's Pages settings and in the `CNAME` file in this folder. At the DNS provider for `gv-tech.eu`, add:
 ```
-CNAME   cup-pong   gregoryverspecht.github.io.
+CNAME   pong-cup   gregoryverspecht.github.io.
 ```
 GitHub verifies the record and provisions HTTPS automatically once it resolves (can take a few minutes up to ~24h). Until then the site is reachable at both the custom domain (HTTP only) and the `github.io` URL above; HTTPS enforcement turns on by itself once the cert is issued.
 
