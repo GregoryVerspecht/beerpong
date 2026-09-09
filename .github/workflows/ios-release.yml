@@ -68,9 +68,16 @@ jobs:
           # mute, and keep mixing with the user's music.
           # (perl, not BSD sed: macOS sed cannot emit newlines in replacements)
           AD=ios/App/App/AppDelegate.swift
-          perl -0pi -e 's/^import Capacitor$/import Capacitor\nimport AVFoundation/m' "$AD"
+          perl -0pi -e 's/^import Capacitor$/import Capacitor\nimport AVFoundation\nimport WebKit/m' "$AD"
           perl -0pi -e 's|// Override point for customization after application launch\.|try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])\n        try? AVAudioSession.sharedInstance().setActive(true)|' "$AD"
           grep -n "AVAudioSession" "$AD"
+          # WKWebView keeps an on-disk HTTP cache for the bundled index.html that can
+          # survive a TestFlight update (only a full delete+reinstall reliably clears
+          # it), so a stale pre-update UI can keep showing after the app reports the
+          # new build number. Clear just the HTTP/offline caches (never localStorage,
+          # where tournament data lives) once per new build number.
+          perl -0pi -e 's|(try\? AVAudioSession\.sharedInstance\(\)\.setActive\(true\))|$1\n        let currentBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""\n        if UserDefaults.standard.string(forKey: "lastClearedBuildForWebViewCache") != currentBuild {\n            let types: Set<String> = [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeOfflineWebApplicationCache]\n            WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: .distantPast) {\n                UserDefaults.standard.set(currentBuild, forKey: "lastClearedBuildForWebViewCache")\n            }\n        }|' "$AD"
+          grep -n "lastClearedBuildForWebViewCache" "$AD"
           # Remove alpha channel — iOS requires fully opaque app icons
           # sips is macOS-native; JPEG roundtrip composites alpha against white
           sips -s format jpeg assets/icon-only.png --out /tmp/icon-flat.jpg
