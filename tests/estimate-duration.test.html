@@ -64,39 +64,39 @@ function harnessFor(src) {
     '})');
   const app = new App();
 
-  const setFormatSrc = span(src, 'const setFormat = (groups, knockout) =>', ' }; });');
-  const estimateSrc = span(src, 'const groupSlots = this.simulateGroupSlots(', '* s.timerMin;');
+  const setFormatSrc = span(src, 'const setFormat = (groups, knockout) =>', '}));');
+  const estimateSrc = span(src, 'const dBase = Math.floor(nT / ds.groups)', '* ds.timerMin;');
 
   return {
     app,
     // setFormat closes over `this.setState`; drive it with a store we control.
     setFormat(state, groups, knockout) {
       let next = state;
-      const ctx = {
-        setState(fn) { next = Object.assign({}, next, fn(next)); },
-        letters: app.letters.bind(app)
-      };
+      const ctx = { setState(fn) { next = Object.assign({}, next, fn(next)); } };
       const make = new Function('return function () { ' + setFormatSrc + ' return setFormat; }')();
       make.call(ctx)(groups, knockout);
       return next;
     },
+    // what Setup shows: the live settings with the staged draft laid over them
+    draftOf(state) { return Object.assign({}, state.settings, state.draft || {}); },
     totalMin(state) {
-      const st = state, s = state.settings;
-      const letters = app.letters(s);
-      const totalTables = Math.max(1, st.tables.length);
-      const run = new Function('st', 's', 'letters', 'totalTables',
-        estimateSrc + ' return { groupSlots, koSlots, totalMin };');
-      return run.call(app, st, s, letters, totalTables);
+      const ds = this.draftOf(state);
+      const nT = state.teams.length;
+      const totalTables = Math.max(1, state.tables.length);
+      const run = new Function('nT', 'ds', 'totalTables',
+        estimateSrc + ' return { groupSlots, koSlots, totalMin, dSizes };');
+      return run.call(app, nT, ds, totalTables);
     }
   };
 }
 
 function baseState(teamCount, tableCount, timerMin, knockout) {
   return {
-    // Teams all start in group A — the state the app is in before any pool is edited by hand.
+    // Teams all start in group A - the state the app is in before any pool is edited.
     teams: Array.from({ length: teamCount }, (_, i) => ({ id: 't' + i, name: 'Team ' + (i + 1), group: 'A' })),
     tables: Array.from({ length: tableCount }, (_, i) => ({ id: 'tab' + i, name: 'Table ' + (i + 1) })),
-    settings: { groups: 1, knockout, timerMin }
+    settings: { groups: 1, knockout, timerMin },
+    draft: null
   };
 }
 
@@ -111,35 +111,30 @@ function run(bundleText) {
   const totals = {};
 
   for (const groups of [1, 2, 3, 4]) {
-    const state = h.setFormat(baseState(9, 2, 15, 8), groups, 8);
-    const sizes = h.app.letters(state.settings).map(g => state.teams.filter(t => t.group === g).length);
+    const before = baseState(9, 2, 15, 8);
+    const state = h.setFormat(before, groups, 8);
     const got = h.totalMin(state);
     totals[groups] = got.totalMin;
-    check(groups + ' groups → balanced pools', sizes.reduce((a, b) => a + b, 0), 9);
-    check(groups + ' groups → no empty pool', sizes.filter(n => n === 0).length, 0);
-    check(groups + ' groups → total ' + expected[groups] + ' min', got.totalMin, expected[groups]);
+
+    check(groups + ' groups -> staged, not applied', [state.settings.groups, state.draft.groups], [1, groups]);
+    check(groups + ' groups -> teams untouched until update', state.teams, before.teams);
+    check(groups + ' groups -> balanced draw of 9', got.dSizes.reduce((a, b) => a + b, 0), 9);
+    check(groups + ' groups -> no empty pool', got.dSizes.filter(n => n === 0).length, 0);
+    check(groups + ' groups -> estimate ' + expected[groups] + ' min', got.totalMin, expected[groups]);
   }
 
-  // The regression itself: the total has to move when the group count moves.
-  check('totals are distinct per group count',
-    new Set(Object.values(totals)).size, 4);
-  check('more groups never takes longer',
-    [1, 2, 3].every(n => totals[n] > totals[n + 1]), true);
+  // The regression this suite exists for: the estimate has to move with the choice.
+  check('estimates are distinct per group count', new Set(Object.values(totals)).size, 4);
+  check('more groups never takes longer', [1, 2, 3].every(n => totals[n] > totals[n + 1]), true);
 
-  // Guard the fix's edge case: picking a different knockout size must not reshuffle
-  // pools the user arranged by hand.
-  let state = h.setFormat(baseState(9, 2, 15, 8), 3, 8);
-  state = Object.assign({}, state, {
-    teams: state.teams.map((t, i) => Object.assign({}, t, { group: i < 3 ? 'C' : i < 6 ? 'A' : 'B' }))
-  });
-  const before = state.teams.map(t => t.group).join('');
-  const after = h.setFormat(state, 3, 4).teams.map(t => t.group).join('');
-  check('knockout change keeps hand-made pools', after, before);
+  // Nothing structural may take effect without pressing Update.
+  const staged = h.setFormat(baseState(9, 2, 15, 8), 4, 2);
+  check('nothing applied to settings', staged.settings, { groups: 1, knockout: 8, timerMin: 15 });
+  check('both choices staged together', [staged.draft.groups, staged.draft.knockout], [4, 2]);
 }
 
 function report(error) {
-  const out = document.getElementById('out');
-  const summary = document.getElementById('summary');
+  const out = document.getElementById('out'), summary = document.getElementById('summary');
   if (error) {
     out.textContent = 'ERROR: ' + error.message + '\n' + (error.stack || '');
     summary.textContent = 'RESULT: FAIL';
@@ -151,7 +146,7 @@ function report(error) {
     (r.ok ? '' : '   (got ' + JSON.stringify(r.actual) + ', want ' + JSON.stringify(r.expected) + ')')
   ).join('\n');
   const failed = results.filter(r => !r.ok).length;
-  summary.textContent = 'RESULT: ' + (failed ? 'FAIL' : 'PASS') + ' — ' +
+  summary.textContent = 'RESULT: ' + (failed ? 'FAIL' : 'PASS') + ' - ' +
     (results.length - failed) + '/' + results.length + ' checks passed';
   summary.className = failed ? 'fail' : 'pass';
 }
