@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pong Cup — estimated duration tests</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; background: #0c0b09; color: #f4efe6; padding: 24px; }
+  h1 { font-size: 15px; margin-bottom: 12px; }
+  .pass { color: #6fcf7f; }
+  .fail { color: #f25f4c; }
+  #summary { margin-top: 16px; font-weight: 700; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Pong Cup — estimated duration tests</h1>
+<pre id="out">running...</pre>
+<div id="summary"></div>
+
+<script>
+// Exercises the real scheduling/estimate code out of deploy/index.html rather than
+// a copy of it, so the assertions follow the production bundle if the formula moves.
+const BUNDLE = '../Beerpong tournament tracker/deploy/index.html';
+
+const results = [];
+function check(name, actual, expected) {
+  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  results.push({ name, ok, actual, expected });
+}
+
+function appSource(bundleText) {
+  // The bundle carries the whole app as one JSON string literal in <script type="__bundler/template">.
+  const line = bundleText.split('\n').find(l => l.startsWith('"<!DOCTYPE html>'));
+  if (!line) throw new Error('template payload not found in bundle');
+  return JSON.parse(line.trim());
+}
+
+// Naive brace matching: every region pulled out below is free of braces inside strings.
+function block(src, signature) {
+  const i = src.indexOf(signature);
+  if (i < 0) throw new Error('not found in bundle: ' + signature);
+  let depth = 0, j = src.indexOf('{', i);
+  for (let k = j; k < src.length; k++) {
+    if (src[k] === '{') depth++;
+    else if (src[k] === '}' && --depth === 0) return src.slice(i, k + 1);
+  }
+  throw new Error('unbalanced braces after: ' + signature);
+}
+
+function span(src, from, to) {
+  const i = src.indexOf(from);
+  if (i < 0) throw new Error('not found in bundle: ' + from);
+  const j = src.indexOf(to, i);
+  if (j < 0) throw new Error('no end marker after: ' + from);
+  return src.slice(i, j + to.length);
+}
+
+function harnessFor(src) {
+  const App = eval('(class {' +
+    block(src, 'letters(s) { return') +
+    block(src, 'roundRobinRounds(n) { const idx') +
+    block(src, 'simulateGroupSlots(groupSizes, tables) {') +
+    block(src, 'knockoutSlots(teams, tables) {') +
+    '})');
+  const app = new App();
+
+  const setFormatSrc = span(src, 'const setFormat = (groups, knockout) =>', ' }; });');
+  const estimateSrc = span(src, 'const groupSlots = this.simulateGroupSlots(', '* s.timerMin;');
+
+  return {
+    app,
+    // setFormat closes over `this.setState`; drive it with a store we control.
+    setFormat(state, groups, knockout) {
+      let next = state;
+      const ctx = {
+        setState(fn) { next = Object.assign({}, next, fn(next)); },
+        letters: app.letters.bind(app)
+      };
+      const make = new Function('return function () { ' + setFormatSrc + ' return setFormat; }')();
+      make.call(ctx)(groups, knockout);
+      return next;
+    },
+    totalMin(state) {
+      const st = state, s = state.settings;
+      const letters = app.letters(s);
+      const totalTables = Math.max(1, st.tables.length);
+      const run = new Function('st', 's', 'letters', 'totalTables',
+        estimateSrc + ' return { groupSlots, koSlots, totalMin };');
+      return run.call(app, st, s, letters, totalTables);
+    }
+  };
+}
+
+function baseState(teamCount, tableCount, timerMin, knockout) {
+  return {
+    // Teams all start in group A — the state the app is in before any pool is edited by hand.
+    teams: Array.from({ length: teamCount }, (_, i) => ({ id: 't' + i, name: 'Team ' + (i + 1), group: 'A' })),
+    tables: Array.from({ length: tableCount }, (_, i) => ({ id: 'tab' + i, name: 'Table ' + (i + 1) })),
+    settings: { groups: 1, knockout, timerMin }
+  };
+}
+
+function run(bundleText) {
+  const src = appSource(bundleText);
+  const h = harnessFor(src);
+
+  // 9 teams, 2 tables, 15 min per game, Top 8 knockout.
+  // Expected slot counts come from the bundle's own round-robin simulation over a
+  // balanced draw: 18/8/5/3 group slots + 4 knockout slots, at 15 min per slot.
+  const expected = { 1: 330, 2: 180, 3: 135, 4: 105 };
+  const totals = {};
+
+  for (const groups of [1, 2, 3, 4]) {
+    const state = h.setFormat(baseState(9, 2, 15, 8), groups, 8);
+    const sizes = h.app.letters(state.settings).map(g => state.teams.filter(t => t.group === g).length);
+    const got = h.totalMin(state);
+    totals[groups] = got.totalMin;
+    check(groups + ' groups → balanced pools', sizes.reduce((a, b) => a + b, 0), 9);
+    check(groups + ' groups → no empty pool', sizes.filter(n => n === 0).length, 0);
+    check(groups + ' groups → total ' + expected[groups] + ' min', got.totalMin, expected[groups]);
+  }
+
+  // The regression itself: the total has to move when the group count moves.
+  check('totals are distinct per group count',
+    new Set(Object.values(totals)).size, 4);
+  check('more groups never takes longer',
+    [1, 2, 3].every(n => totals[n] > totals[n + 1]), true);
+
+  // Guard the fix's edge case: picking a different knockout size must not reshuffle
+  // pools the user arranged by hand.
+  let state = h.setFormat(baseState(9, 2, 15, 8), 3, 8);
+  state = Object.assign({}, state, {
+    teams: state.teams.map((t, i) => Object.assign({}, t, { group: i < 3 ? 'C' : i < 6 ? 'A' : 'B' }))
+  });
+  const before = state.teams.map(t => t.group).join('');
+  const after = h.setFormat(state, 3, 4).teams.map(t => t.group).join('');
+  check('knockout change keeps hand-made pools', after, before);
+}
+
+function report(error) {
+  const out = document.getElementById('out');
+  const summary = document.getElementById('summary');
+  if (error) {
+    out.textContent = 'ERROR: ' + error.message + '\n' + (error.stack || '');
+    summary.textContent = 'RESULT: FAIL';
+    summary.className = 'fail';
+    return;
+  }
+  out.innerHTML = results.map(r =>
+    '<span class="' + (r.ok ? 'pass' : 'fail') + '">' + (r.ok ? 'PASS' : 'FAIL') + '</span>  ' + r.name +
+    (r.ok ? '' : '   (got ' + JSON.stringify(r.actual) + ', want ' + JSON.stringify(r.expected) + ')')
+  ).join('\n');
+  const failed = results.filter(r => !r.ok).length;
+  summary.textContent = 'RESULT: ' + (failed ? 'FAIL' : 'PASS') + ' — ' +
+    (results.length - failed) + '/' + results.length + ' checks passed';
+  summary.className = failed ? 'fail' : 'pass';
+}
+
+fetch(BUNDLE)
+  .then(r => r.text())
+  .then(text => { run(text); report(null); })
+  .catch(err => report(err));
+</script>
+</body>
+</html>

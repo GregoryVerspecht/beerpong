@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pong Cup — QR / tournament session tests</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; background: #0c0b09; color: #f4efe6; padding: 24px; }
+  h1 { font-size: 15px; margin-bottom: 12px; }
+  .pass { color: #6fcf7f; }
+  .fail { color: #f25f4c; }
+  #summary { margin-top: 16px; font-weight: 700; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Pong Cup — QR / tournament session tests</h1>
+<pre id="out">running...</pre>
+<div id="summary"></div>
+
+<script>
+// A table QR must name the tournament it belongs to, and scanning it must never
+// resolve the table id against a different tournament's data.
+const BUNDLE = '../Beerpong tournament tracker/deploy/index.html';
+
+const results = [];
+function check(name, actual, expected) {
+  results.push({ name, ok: JSON.stringify(actual) === JSON.stringify(expected), actual, expected });
+}
+
+function appSource(bundleText) {
+  const line = bundleText.split('\n').find(l => l.startsWith('"<!DOCTYPE html>'));
+  if (!line) throw new Error('template payload not found in bundle');
+  return JSON.parse(line.trim());
+}
+
+function block(src, signature) {
+  const i = src.indexOf(signature);
+  if (i < 0) throw new Error('not found in bundle: ' + signature);
+  let depth = 0;
+  for (let k = src.indexOf('{', i); k < src.length; k++) {
+    if (src[k] === '{') depth++;
+    else if (src[k] === '}' && --depth === 0) return src.slice(i, k + 1);
+  }
+  throw new Error('unbalanced braces after: ' + signature);
+}
+
+function span(src, from, to) {
+  const i = src.indexOf(from);
+  if (i < 0) throw new Error('not found in bundle: ' + from);
+  const j = src.indexOf(to, i);
+  if (j < 0) throw new Error('no end marker after: ' + from);
+  return src.slice(i, j + to.length);
+}
+
+// A tournament as the app stores it: two tables that happen to share ids across
+// tournaments would be indistinguishable without a code, so give them the same ones.
+function tournament(code, name) {
+  return {
+    meta: { code, name },
+    tables: [{ id: 'tb1', name: 'Table 1' }, { id: 'tb2', name: 'Table 2' }],
+    games: [{ id: 'g-' + code, table: 'tb1', status: 'live' }],
+    teams: [{ id: 't1', group: 'A' }],
+    view: 'home', scoring: null
+  };
+}
+
+function makeApp(src, state) {
+  const app = eval('(class {' + block(src, 'qr(tableId) {') + block(src, 'openLinkedTable() {') + '})');
+  const ctx = Object.create(app.prototype);
+  ctx.state = state;
+  ctx.joined = [];
+  ctx.setState = patch => { ctx.state = Object.assign({}, ctx.state, patch); };
+  ctx.doJoin = code => { ctx.joined.push(code); ctx.setState(tournament(code, 'Joining ' + code + '…')); ctx.state.tables = []; ctx.state.games = []; };
+  return ctx;
+}
+
+// Runs the real componentDidMount query-string block with a stubbed location.
+function openLink(ctx, search) {
+  const src = ctx.__src;
+  const body = span(src, 'const q = new URLSearchParams(location.search);', 'this.openLinkedTable();');
+  new Function('location', body).call(ctx, { search });
+}
+
+function run(bundleText) {
+  const src = appSource(bundleText);
+
+  // --- the QR payload itself -------------------------------------------------
+  const home = makeApp(src, tournament('ABC123', 'Home Cup'));
+  home.__src = src;
+  const url = decodeURIComponent(home.qr('tb1').split('&data=')[1]);
+  check('QR carries the tournament code', /[?&]t=ABC123(&|$)/.test(url), true);
+  check('QR still carries the table', /[&?]table=tb1(&|$)/.test(url), true);
+
+  const other = makeApp(src, tournament('XYZ789', 'Other Cup'));
+  const otherUrl = decodeURIComponent(other.qr('tb1').split('&data=')[1]);
+  check('same table id in two tournaments gives different QR links', url === otherUrl, false);
+
+  // --- scanning a QR from the tournament you are already on ------------------
+  const same = makeApp(src, tournament('ABC123', 'Home Cup'));
+  same.__src = src;
+  openLink(same, '?t=ABC123&table=tb1');
+  check('same tournament → no join', same.joined, []);
+  check('same tournament → opens live view', same.state.view, 'live');
+  check('same tournament → opens that table\'s game', same.state.scoring, 'g-ABC123');
+
+  // --- scanning a QR from a different tournament -----------------------------
+  // The regression: tb1 exists in both, so without the code the scan silently
+  // scored the wrong tournament's game.
+  const cross = makeApp(src, tournament('ABC123', 'Home Cup'));
+  cross.__src = src;
+  openLink(cross, '?t=XYZ789&table=tb1');
+  check('different tournament → joins it', cross.joined, ['XYZ789']);
+  check('different tournament → switches code', cross.state.meta.code, 'XYZ789');
+  check('different tournament → does NOT open the local game', cross.state.scoring, null);
+
+  // ...and the table resolves once that tournament's data actually arrives.
+  cross.setState({ tables: tournament('XYZ789', 'x').tables, games: tournament('XYZ789', 'x').games });
+  cross.openLinkedTable();
+  check('deferred link resolves after sync', cross.state.scoring, 'g-XYZ789');
+  check('deferred link opens live view', cross.state.view, 'live');
+
+  // --- QR codes printed before this fix still work ---------------------------
+  const legacy = makeApp(src, tournament('ABC123', 'Home Cup'));
+  legacy.__src = src;
+  openLink(legacy, '?table=tb2');
+  check('legacy QR (no code) still resolves locally', legacy.state.view, 'live');
+  check('legacy QR (no code) does not join anything', legacy.joined, []);
+
+  // --- a stale link must not hijack the view later in the session ------------
+  const stale = makeApp(src, tournament('ABC123', 'Home Cup'));
+  stale.__src = src;
+  openLink(stale, '?t=XYZ789&table=tb1');
+  stale.linkUntil = Date.now() - 1;
+  stale.setState({ tables: tournament('XYZ789', 'x').tables, games: tournament('XYZ789', 'x').games, view: 'standings' });
+  stale.openLinkedTable();
+  check('expired link stops trying', stale.state.view, 'standings');
+}
+
+function report(error) {
+  const out = document.getElementById('out'), summary = document.getElementById('summary');
+  if (error) {
+    out.textContent = 'ERROR: ' + error.message + '\n' + (error.stack || '');
+    summary.textContent = 'RESULT: FAIL'; summary.className = 'fail';
+    return;
+  }
+  out.innerHTML = results.map(r =>
+    '<span class="' + (r.ok ? 'pass' : 'fail') + '">' + (r.ok ? 'PASS' : 'FAIL') + '</span>  ' + r.name +
+    (r.ok ? '' : '   (got ' + JSON.stringify(r.actual) + ', want ' + JSON.stringify(r.expected) + ')')
+  ).join('\n');
+  const failed = results.filter(r => !r.ok).length;
+  summary.textContent = 'RESULT: ' + (failed ? 'FAIL' : 'PASS') + ' — ' +
+    (results.length - failed) + '/' + results.length + ' checks passed';
+  summary.className = failed ? 'fail' : 'pass';
+}
+
+fetch(BUNDLE).then(r => r.text()).then(t => { run(t); report(null); }).catch(report);
+</script>
+</body>
+</html>
