@@ -343,6 +343,55 @@ function run(bundleText) {
   };
   check('more wins still ranks first', app.statRows(tiedTeams).map(r => r.team.id), ['b', 'a']);
 
+  // ---- the Bracket fixture list and the Ranking queue ----
+  // Pulled out of renderVals with stand-ins for the closures they read, so the lists are the
+  // ones the screens really build.
+  const listSrc = span(src, 'const fixtureRow = g => {', "rowBg: i === 0 ? '#1c170c' : 'transparent' }; });");
+  const lists = (games, busyIds) => {
+    const busy = new Set(busyIds || []);
+    const deco = g => ({ ...g, ta: { name: g.a, color: '#fff' }, tb: { name: g.b, color: '#fff' }, open: () => {} });
+    return new Function('deco', 'st', 'letters', 'teamBusy',
+      listSrc + ' return { groupFixtures, hasFixtures, queue };'
+    )(deco, { games }, ['A', 'B'], g => busy.has(g.a) || busy.has(g.b));
+  };
+
+  const board = [
+    { stage: 'group', group: 'A', a: 'a1', b: 'a2', status: 'done', ca: 10, cb: 6 },
+    { stage: 'group', group: 'A', a: 'a3', b: 'a4', status: 'live', ca: 7, cb: 5 },
+    { stage: 'group', group: 'A', a: 'a1', b: 'a3', status: 'sched', ca: 10, cb: 10 },
+    { stage: 'group', group: 'B', a: 'b1', b: 'b2', status: 'sched', ca: 10, cb: 10 },
+    { stage: 'ko', group: null, a: 'a1', b: 'b1', status: 'sched', ca: 10, cb: 10 }
+  ];
+  const L = lists(board, ['a3', 'a4']);
+
+  check('fixtures are grouped by pool', L.groupFixtures.map(g => g.name), ['GROUP A', 'GROUP B']);
+  check('every group game appears once', L.groupFixtures.reduce((n, g) => n + g.games.length, 0), 4);
+  check('knockout games stay out of the group fixtures',
+    L.groupFixtures.every(g => g.games.every(m => m.stage === 'group')), true);
+  check('a finished fixture shows its score', L.groupFixtures[0].games[0].score, '10 – 6');
+  check('a live fixture shows its running score', L.groupFixtures[0].games[1].score, '7 – 5');
+  check('an unplayed fixture shows vs', L.groupFixtures[0].games[2].score, 'vs');
+  check('only played fixtures open the scorer',
+    L.groupFixtures[0].games.map(m => typeof m.openRow === 'function'), [true, true, false]);
+  check('the played count is per group', L.groupFixtures.map(g => g.sub), ['1/3 played', '0/1 played']);
+  check('empty groups are dropped', lists([board[3]]).groupFixtures.map(g => g.name), ['GROUP B']);
+  check('no games at all -> nothing to show', lists([]).hasFixtures, false);
+
+  check('the queue holds every scheduled game, group and knockout', L.queue.length, 3);
+  check('the queue keeps schedule order', L.queue.map(m => m.a), ['a1', 'b1', 'a1']);
+  check('the queue is numbered from 1', L.queue.map(m => m.pos), [1, 2, 3]);
+  check('finished and live games are not in the queue',
+    L.queue.every(m => m.status === 'sched'), true);
+  // b1 is in both the second and the third queued match, so both carry the flag.
+  check('the queue flags every match holding a team that is still on a table',
+    lists(board, ['b1']).queue.map(m => m.busy), [false, true, true]);
+  check('nobody busy -> no flags', lists(board).queue.map(m => m.busy), [false, false, false]);
+  check('an 18-match draw queues all 18, not the Live tab top 8', (() => {
+    const ts = teamsOf(9);
+    const drawn = app.schedule(ts, balanced(4)).map(g => ({ ...g, stage: 'group', group: 'A' }));
+    return lists(drawn).queue.length;
+  })(), 18);
+
   // ---- knockout seeding is untouched: 1v8, 4v5, 2v7, 3v6 ----
   const pairSrc = span(src, 'const rawPairs = [];', 'const pairs = order.map(i => rawPairs[i]);');
   const seedPairs = (knockout, count) => {
