@@ -346,13 +346,16 @@ function run(bundleText) {
   // ---- the Bracket fixture list and the Ranking queue ----
   // Pulled out of renderVals with stand-ins for the closures they read, so the lists are the
   // ones the screens really build.
-  const listSrc = span(src, 'const fixtureRow = g => {', "rowBg: i === 0 ? '#1c170c' : 'transparent' }; });");
-  const lists = (games, busyIds) => {
+  const listSrc = span(src, 'const fixtureRow = g => {', "rowBg: isCall ? '#1c170c' : 'transparent' }; });");
+  const lists = (games, busyIds, tables) => {
     const busy = new Set(busyIds || []);
+    const freeTables = tables === undefined ? [{ id: 'tb1', name: 'Table 1' }] : tables;
     const deco = g => ({ ...g, ta: { name: g.a, color: '#fff' }, tb: { name: g.b, color: '#fff' }, open: () => {} });
-    return new Function('deco', 'st', 'letters', 'teamBusy',
+    const teamBusy = g => busy.has(g.a) || busy.has(g.b);
+    const startOpts = g => teamBusy(g) ? [] : freeTables.map(t => ({ label: t.name, start: () => {} }));
+    return new Function('deco', 'st', 'letters', 'teamBusy', 'startOpts', 'freeTables',
       listSrc + ' return { groupFixtures, hasFixtures, queue };'
-    )(deco, { games }, ['A', 'B'], g => busy.has(g.a) || busy.has(g.b));
+    )(deco, { games }, ['A', 'B'], teamBusy, startOpts, freeTables);
   };
 
   const board = [
@@ -391,6 +394,21 @@ function run(bundleText) {
     const drawn = app.schedule(ts, balanced(4)).map(g => ({ ...g, stage: 'group', group: 'A' }));
     return lists(drawn).queue.length;
   })(), 18);
+
+  // The queue is what Live renders now, so it has to carry the call-up and the start buttons.
+  const drawn18 = app.schedule(teamsOf(9), balanced(4)).map(g => ({ ...g, stage: 'group', group: 'A' }));
+  const Q = lists(drawn18);
+  check('exactly one match is called up', Q.queue.filter(m => m.isCall).length, 1);
+  check('the call-up is the first startable match', Q.queue.findIndex(m => m.isCall), 0);
+  check('the call-up names the free table', Q.queue[0].callLabel, 'TABLE 1 IS FREE — UP NEXT');
+  check('start buttons stay on the actionable window, not all 18',
+    Q.queue.map(m => m.hasStart), Array.from({ length: 18 }, (_, i) => i < 8));
+  check('a start button per free table', lists(drawn18, [], [{ id: 'a', name: 'T1' }, { id: 'b', name: 'T2' }]).queue[0].startOptions.map(o => o.label), ['T1', 'T2']);
+  check('no free table -> no buttons and no call-up',
+    (() => { const r = lists(drawn18, [], []); return [r.queue.some(m => m.hasStart), r.queue.some(m => m.isCall)]; })(), [false, false]);
+  check('a busy team cannot be started', lists(drawn18, [drawn18[0].a]).queue[0].hasStart, false);
+  check('the call-up skips past a busy team',
+    lists(drawn18, [drawn18[0].a]).queue.findIndex(m => m.isCall), 1);
 
   // ---- knockout seeding is untouched: 1v8, 4v5, 2v7, 3v6 ----
   const pairSrc = span(src, 'const rawPairs = [];', 'const pairs = order.map(i => rawPairs[i]);');
