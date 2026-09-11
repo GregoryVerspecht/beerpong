@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pong Cup — balanced random draw tests</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; background: #0c0b09; color: #f4efe6; padding: 24px; }
+  h1 { font-size: 15px; margin-bottom: 12px; }
+  .pass { color: #6fcf7f; }
+  .fail { color: #f25f4c; }
+  #summary { margin-top: 16px; font-weight: 700; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Pong Cup — balanced random draw tests</h1>
+<pre id="out">running...</pre>
+<div id="summary"></div>
+
+<script>
+// Exercises the real draw out of deploy/index.html rather than a copy of it, so the
+// assertions follow the production bundle if the construction moves.
+const BUNDLE = '../Beerpong tournament tracker/deploy/index.html';
+
+const results = [];
+function check(name, actual, expected) {
+  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  results.push({ name, ok, actual, expected });
+}
+
+function appSource(bundleText) {
+  // The bundle carries the whole app as one JSON string literal in <script type="__bundler/template">.
+  const line = bundleText.split('\n').find(l => l.startsWith('"<!DOCTYPE html>'));
+  if (!line) throw new Error('template payload not found in bundle');
+  return JSON.parse(line.trim());
+}
+
+// Naive brace matching: every region pulled out below is free of braces inside strings.
+function block(src, signature) {
+  const i = src.indexOf(signature);
+  if (i < 0) throw new Error('not found in bundle: ' + signature);
+  let depth = 0;
+  for (let k = src.indexOf('{', i); k < src.length; k++) {
+    if (src[k] === '{') depth++;
+    else if (src[k] === '}' && --depth === 0) return src.slice(i, k + 1);
+  }
+  throw new Error('unbalanced braces after: ' + signature);
+}
+
+function span(src, from, to) {
+  const i = src.indexOf(from);
+  if (i < 0) throw new Error('not found in bundle: ' + from);
+  const j = src.indexOf(to, i);
+  if (j < 0) throw new Error('no end marker after: ' + from);
+  return src.slice(i, j + to.length);
+}
+
+function harnessFor(src) {
+  const App = eval('(class {' + [
+    'statRows(list) {',
+    'headToHead(a, b) {',
+    'shuffled(list) {',
+    'groupFormat(s) {',
+    'gamesPerTeam(s) {',
+    'balancedValid(n, d) {',
+    'balancedDegree(n, d) {',
+    'balancedEdges(n, d) {',
+    'balancedRounds(n, d, random) {',
+    'simulateBalancedSlots(groupSizes, gamesPerTeam, tables) {',
+    'roundRobinRounds(n) { const idx',
+    'simulateGroupSlots(groupSizes, tables) {',
+    'letters(s) { return',
+    'mkGame(o, s) {',
+    'schedule(teams, s) {'
+  ].map(sig => block(src, sig)).join('\n') + '})');
+  return new App();
+}
+
+function teamsOf(count, group) {
+  return Array.from({ length: count }, (_, i) => ({ id: 't' + (i + 1), name: 'Team ' + (i + 1), group: group || 'A' }));
+}
+
+// Only the fields schedule() reads; nothing here depends on the rest of the settings.
+function balanced(gamesPerTeam, groups) {
+  return { cups: 10, groups: groups || 1, groupFormat: 'balanced', gamesPerTeam };
+}
+
+function counts(games, teams) {
+  const n = {};
+  teams.forEach(t => { n[t.id] = 0; });
+  games.forEach(g => { n[g.a]++; n[g.b]++; });
+  return n;
+}
+
+function matchupKeys(games) {
+  return games.map(g => [g.a, g.b].sort().join(' v '));
+}
+
+function run(bundleText) {
+  const src = appSource(bundleText);
+  const app = harnessFor(src);
+
+  // ---- the tournament this was built for: 9 teams, 4 games each ----
+  const nine = teamsOf(9);
+  const draw = app.schedule(nine, balanced(4));
+
+  check('9 teams / 4 games -> 18 matches', draw.length, 18);
+  check('9 teams / 4 games -> total is teamCount * gamesPerTeam / 2', draw.length, 9 * 4 / 2);
+  check('every team plays exactly 4', Object.values(counts(draw, nine)), Array(9).fill(4));
+  check('every team is in the draw', Object.keys(counts(draw, nine)).length, 9);
+  check('no duplicate matchup', new Set(matchupKeys(draw)).size, 18);
+  check('no team against itself', draw.filter(g => g.a === g.b).length, 0);
+  check('every match is a scheduled group game', draw.filter(g => g.stage === 'group' && g.status === 'sched').length, 18);
+  check('4 different opponents per team', nine.map(t => new Set(draw.filter(g => g.a === t.id || g.b === t.id).map(g => g.a === t.id ? g.b : g.a)).size), Array(9).fill(4));
+
+  // The draw is randomised, so assert the invariants over many draws rather than one.
+  let bad = [];
+  for (let i = 0; i < 250; i++) {
+    const d = app.schedule(nine, balanced(4));
+    const c = Object.values(counts(d, nine));
+    if (d.length !== 18 || c.some(n => n !== 4) || new Set(matchupKeys(d)).size !== 18 || d.some(g => g.a === g.b)) bad.push(i);
+  }
+  check('250 redraws all valid', bad, []);
+
+  // Randomised, not fixed: the matchups have to differ across draws.
+  const drawKeys = new Set(Array.from({ length: 25 }, () => matchupKeys(app.schedule(nine, balanced(4))).sort().join('|')));
+  check('redraws produce different pairings', drawKeys.size > 1, true);
+
+  // ---- gamesPerTeam at the maximum equals a full round robin ----
+  const rr = app.schedule(nine, { cups: 10, groups: 1 });
+  const max = app.schedule(nine, balanced(8));
+  check('round robin over 9 teams -> 36 matches', rr.length, 36);
+  check('9 teams / 8 games -> 36 matches', max.length, 36);
+  check('9 teams / 8 games -> the same matchups as a round robin', matchupKeys(max).sort(), matchupKeys(rr).sort());
+
+  // ---- configuration validation ----
+  check('9 x 4 allowed', app.balancedValid(9, 4), true);
+  check('9 x 8 allowed', app.balancedValid(9, 8), true);
+  check('9 x 5 refused - teamCount * gamesPerTeam is odd', app.balancedValid(9, 5), false);
+  check('9 x 3 refused - teamCount * gamesPerTeam is odd', app.balancedValid(9, 3), false);
+  check('9 x 9 refused - gamesPerTeam > teamCount - 1', app.balancedValid(9, 9), false);
+  check('9 x 0 refused', app.balancedValid(9, 0), false);
+  check('9 x -2 refused', app.balancedValid(9, -2), false);
+  check('9 x 2.5 refused', app.balancedValid(9, 2.5), false);
+  check('1 x 1 refused - a group needs 2 teams', app.balancedValid(1, 1), false);
+  check('8 x 3 allowed - odd games per team needs an even team count', app.balancedValid(8, 3), true);
+  check('8 x 7 allowed', app.balancedValid(8, 7), true);
+  check('2 x 1 allowed', app.balancedValid(2, 1), true);
+
+  // The generator never emits a broken draw even when handed a refused number: it falls back
+  // to the largest playable one, so a stale saved setting cannot corrupt a tournament.
+  check('degree falls back below an odd product', app.balancedDegree(9, 5), 4);
+  check('degree falls back below too many games', app.balancedDegree(9, 12), 8);
+  check('degree keeps a valid request', app.balancedDegree(9, 4), 4);
+  check('degree keeps a valid odd request', app.balancedDegree(8, 3), 3);
+
+  // ---- every playable (teams, games) pair produces a valid draw ----
+  const sweep = [];
+  for (let n = 2; n <= 16; n++) {
+    for (let d = 1; d <= n - 1; d++) {
+      if (!app.balancedValid(n, d)) continue;
+      const ts = teamsOf(n);
+      const g = app.schedule(ts, balanced(d));
+      const c = Object.values(counts(g, ts));
+      if (g.length !== n * d / 2 || c.some(x => x !== d) || new Set(matchupKeys(g)).size !== g.length || g.some(x => x.a === x.b)) sweep.push(n + 'x' + d);
+    }
+  }
+  check('every playable config from 2 to 16 teams is a valid draw', sweep, []);
+
+  // ---- groups stay separate ----
+  const twoPools = teamsOf(4, 'A').concat(teamsOf(4, 'B').map(t => ({ ...t, id: t.id + 'b' })));
+  const pooled = app.schedule(twoPools, balanced(2, 2));
+  check('2 groups of 4 at 2 games each -> 8 matches', pooled.length, 8);
+  check('no match crosses groups', pooled.filter(g => g.a.endsWith('b') !== g.b.endsWith('b')).length, 0);
+  check('every team still plays exactly 2', Object.values(counts(pooled, twoPools)), Array(8).fill(2));
+
+  // ---- back to back protection ----
+  // Matches come out in rounds no team appears in twice, so consecutive matches almost never
+  // share a team. Allow the handover between rounds.
+  const repeats = draw.reduce((n, g, i) => {
+    if (i === 0) return 0;
+    const p = draw[i - 1];
+    return n + (p.a === g.a || p.a === g.b || p.b === g.a || p.b === g.b ? 1 : 0);
+  }, 0);
+  check('at most one back-to-back per round boundary', repeats <= 5, true);
+
+  // ---- backwards compatibility: no format field means round robin ----
+  check('settings without groupFormat -> round robin', app.schedule(nine, { cups: 10, groups: 1 }).length, 36);
+  check('settings without groupFormat -> format reads as rr', app.groupFormat({ cups: 10, groups: 1 }), 'rr');
+  check('settings without gamesPerTeam -> defaults to 4', app.gamesPerTeam({ cups: 10, groups: 1 }), 4);
+  check('an unknown format falls back to round robin', app.schedule(nine, { cups: 10, groups: 1, groupFormat: 'whatever' }).length, 36);
+  check('round robin ignores gamesPerTeam', app.schedule(nine, { cups: 10, groups: 1, groupFormat: 'rr', gamesPerTeam: 4 }).length, 36);
+
+  // ---- the Setup estimate ----
+  // 18 matches over 2 tables is 9 slots, and no table ever idles.
+  check('9 teams / 4 games on 2 tables -> 9 slots', app.simulateBalancedSlots([9], 4, 2), 9);
+  check('9 teams / 4 games on 1 table -> 18 slots', app.simulateBalancedSlots([9], 4, 1), 18);
+  check('balanced is never slower than the round robin it is a subset of',
+    app.simulateBalancedSlots([9], 4, 2) < app.simulateGroupSlots([9], 2), true);
+
+  // ---- standings ----
+  // A and B: same wins, same cup difference, same cups hit. A beat B head to head.
+  // In a balanced draw teams have not all met the same opponents, so head to head decides;
+  // round robin keeps the chain it has always had and falls through to the name.
+  const tiedTeams = [{ id: 'a', name: 'Zulu' }, { id: 'b', name: 'Alpha' }];
+  const done = (a, b, ca, cb) => ({ stage: 'group', status: 'done', a, b, ca, cb });
+  // Both end on 1 win, 1 loss, cup difference -1 and 3 cups hit; only the meeting separates them.
+  const tiedGames = [
+    done('a', 'b', 10, 7),   // A beats B: A +3 diff / 3 hit, B -3 diff / 0 hit
+    done('a', 'c', 6, 10),   // A loses to C: -4 diff, 0 hit
+    done('b', 'd', 9, 7)     // B beats D on the timer: +2 diff, 3 hit
+  ];
+  const rank = (format) => {
+    app.state = { games: tiedGames, settings: { cups: 10, pointsWin: 3, tiebreaker: 'cupdiff', groupFormat: format } };
+    return app.statRows(tiedTeams).map(r => r.team.id);
+  };
+  app.state = { games: tiedGames, settings: { cups: 10, pointsWin: 3, tiebreaker: 'cupdiff', groupFormat: 'balanced' } };
+  const tiedRows = app.statRows(tiedTeams);
+  check('the two teams really are tied on wins', tiedRows.map(r => r.w), [1, 1]);
+  check('the two teams really are tied on cup difference', tiedRows.map(r => r.cdn), [-1, -1]);
+  check('the two teams really are tied on cups hit', tiedRows.map(r => r.ch), [3, 3]);
+  check('balanced -> head to head puts the winner first', rank('balanced'), ['a', 'b']);
+  check('round robin -> unchanged, falls through to the name', rank('rr'), ['b', 'a']);
+  check('no format field -> unchanged, falls through to the name', rank(undefined), ['b', 'a']);
+  check('head to head is symmetric', [app.headToHead('a', 'b'), app.headToHead('b', 'a')], [-1, 1]);
+  check('head to head is 0 for teams that never met', app.headToHead('a', 'd'), 0);
+
+  // Wins still outrank everything, in both formats.
+  app.state = {
+    games: [done('a', 'c', 3, 10), done('b', 'c', 10, 0), done('b', 'a', 10, 0)],
+    settings: { cups: 10, pointsWin: 3, tiebreaker: 'cupdiff', groupFormat: 'balanced' }
+  };
+  check('more wins still ranks first', app.statRows(tiedTeams).map(r => r.team.id), ['b', 'a']);
+
+  // ---- knockout seeding is untouched: 1v8, 4v5, 2v7, 3v6 ----
+  const pairSrc = span(src, 'const rawPairs = [];', 'const pairs = order.map(i => rawPairs[i]);');
+  const seedPairs = (knockout, count) => {
+    const seeds = Array.from({ length: count }, (_, i) => ({ label: 'S' + (i + 1) }));
+    return new Function('s', 'seeds', pairSrc + ' return pairs;')({ knockout }, seeds)
+      .map(p => [p[0] ? p[0].label : 'BYE', p[1] ? p[1].label : 'BYE']);
+  };
+  check('top 8 bracket order is 1v8, 4v5, 2v7, 3v6', seedPairs(8, 8),
+    [['S1', 'S8'], ['S4', 'S5'], ['S2', 'S7'], ['S3', 'S6']]);
+  check('top 4 bracket order is 1v4, 2v3', seedPairs(4, 4), [['S1', 'S4'], ['S2', 'S3']]);
+  check('9th team does not reach the bracket', seedPairs(8, 9).flat().includes('S9'), false);
+  check('too few teams give the top seed a bye', seedPairs(8, 7)[0], ['S1', 'BYE']);
+}
+
+function report(error) {
+  const out = document.getElementById('out'), summary = document.getElementById('summary');
+  if (error) {
+    out.textContent = 'ERROR: ' + error.message + '\n' + (error.stack || '');
+    summary.textContent = 'RESULT: FAIL';
+    summary.className = 'fail';
+    return;
+  }
+  out.innerHTML = results.map(r =>
+    '<span class="' + (r.ok ? 'pass' : 'fail') + '">' + (r.ok ? 'PASS' : 'FAIL') + '</span>  ' + r.name +
+    (r.ok ? '' : '   (got ' + JSON.stringify(r.actual) + ', want ' + JSON.stringify(r.expected) + ')')
+  ).join('\n');
+  const failed = results.filter(r => !r.ok).length;
+  summary.textContent = 'RESULT: ' + (failed ? 'FAIL' : 'PASS') + ' - ' +
+    (results.length - failed) + '/' + results.length + ' checks passed';
+  summary.className = failed ? 'fail' : 'pass';
+}
+
+fetch(BUNDLE)
+  .then(r => r.text())
+  .then(text => { run(text); report(null); })
+  .catch(err => report(err));
+</script>
+</body>
+</html>
