@@ -62,7 +62,9 @@ function harnessFor(src) {
     'headToHead(a, b) {',
     'shuffled(list) {',
     'groupFormat(s) {',
-    'gamesPerTeam(s) {',
+    'poolSizes(teamCount, groups) {',
+    'defaultGamesPerTeam(n) {',
+    'gamesPerTeam(s, poolSize) {',
     'balancedValid(n, d) {',
     'balancedDegree(n, d) {',
     'balancedEdges(n, d) {',
@@ -224,9 +226,33 @@ function run(bundleText) {
   // ---- backwards compatibility: no format field means round robin ----
   check('settings without groupFormat -> round robin', app.schedule(nine, { cups: 10, groups: 1 }).length, 36);
   check('settings without groupFormat -> format reads as rr', app.groupFormat({ cups: 10, groups: 1 }), 'rr');
-  check('settings without gamesPerTeam -> defaults to 4', app.gamesPerTeam({ cups: 10, groups: 1 }), 4);
   check('an unknown format falls back to round robin', app.schedule(nine, { cups: 10, groups: 1, groupFormat: 'whatever' }).length, 36);
   check('round robin ignores gamesPerTeam', app.schedule(nine, { cups: 10, groups: 1, groupFormat: 'rr', gamesPerTeam: 4 }).length, 36);
+
+  // ---- there is no default games-per-team constant; it comes from the field size ----
+  check('no games-per-team constant is shipped', app.defaults().gamesPerTeam, undefined);
+  check('the default is the playable count nearest half the pool',
+    [2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 20, 31].map(n => app.defaultGamesPerTeam(n)),
+    [1, 2, 2, 2, 3, 4, 4, 4, 5, 6, 10, 16]);
+  check('every derived default is itself playable',
+    Array.from({ length: 39 }, (_, i) => i + 2).filter(n => !app.balancedValid(n, app.defaultGamesPerTeam(n))), []);
+  check('a pool too small to play gets 0', [app.defaultGamesPerTeam(1), app.defaultGamesPerTeam(0)], [0, 0]);
+  check('a stored count always wins over the derived one', app.gamesPerTeam({ gamesPerTeam: 6 }, 9), 6);
+  check('balanced with nothing stored derives per pool size',
+    [9, 14, 20].map(n => app.schedule(teamsOf(n), { cups: 10, groups: 1, groupFormat: 'balanced' }).length),
+    [9 * 4 / 2, 14 * 7 / 2, 20 * 10 / 2]);
+  check('and that draw is still exact', (() => {
+    const bad = [];
+    for (let n = 2; n <= 30; n++) {
+      const ts = teamsOf(n);
+      const g = app.schedule(ts, { cups: 10, groups: 1, groupFormat: 'balanced' });
+      const want = app.defaultGamesPerTeam(n);
+      if (g.length !== n * want / 2 || Object.values(counts(g, ts)).some(x => x !== want)) bad.push(n);
+    }
+    return bad;
+  })(), []);
+  check('pools split evenly whatever the field', [app.poolSizes(9, 2).sizes, app.poolSizes(23, 4).sizes, app.poolSizes(8, 2).sizes],
+    [[5, 4], [6, 6, 6, 5], [4, 4]]);
 
   // ---- the Setup estimate ----
   // 18 matches over 2 tables is 9 slots, and no table ever idles.
@@ -238,10 +264,15 @@ function run(bundleText) {
   // ---- what Setup works out for the staged pick ----
   // Evaluated straight out of renderVals, so the ceiling and the suggested alternatives are
   // the ones the screen really shows for whatever team count and group split are chosen.
-  const noteSrc = span(src, 'const bSizes = Array.from({ length: ds.groups }', "each against a different opponent.';");
-  const setup = (teamCount, groups, gamesPerTeam) => new Function('nT', 'ds', 'gpt', 'balancedOn',
-    noteSrc + ' return { bSizes, bTotal, bMax, bAlts, balancedOk, balancedNote };'
-  ).call(app, teamCount, { groups }, gamesPerTeam, true);
+  const noteSrc = span(src, 'const bTotal = bSizes.reduce', "each against a different opponent.';");
+  const setup = (teamCount, groups, gamesPerTeam) => {
+    const pools = app.poolSizes(teamCount, groups);
+    // Same resolution renderVals does: a stored count, else the one derived from the pools.
+    const gpt = app.gamesPerTeam({ gamesPerTeam }, pools.small);
+    return new Function('nT', 'ds', 'gpt', 'balancedOn', 'bSizes', 'bSmall',
+      noteSrc + ' return { bSizes, bTotal, bMax, bAlts, balancedOk, balancedNote, gpt };'
+    ).call(app, teamCount, { groups }, gpt, true, pools.sizes, pools.small);
+  };
 
   check('ceiling comes from the smallest pool, 9 in 1 group', setup(9, 1, 4).bMax, 8);
   check('ceiling comes from the smallest pool, 9 in 2 groups', setup(9, 2, 4).bMax, 3);
