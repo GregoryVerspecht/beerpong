@@ -99,7 +99,7 @@ function matchupKeys(games) {
   return games.map(g => [g.a, g.b].sort().join(' v '));
 }
 
-function run(bundleText) {
+async function run(bundleText) {
   const src = appSource(bundleText);
   const app = harnessFor(src);
 
@@ -410,6 +410,85 @@ function run(bundleText) {
   check('the call-up skips past a busy team',
     lists(drawn18, [drawn18[0].a]).queue.findIndex(m => m.isCall), 1);
 
+  // ---- the group table's "-> SF1" labels follow the real knockout ----
+  const destSrc = span(src, 'const destOf = {};', 'codeOf(pairs.length, i); }));');
+  const destOf = (koGames, pairs) => {
+    const codeOf = (m, i) => (m === 1 ? 'FINAL' : (m === 2 ? 'SF' : m === 4 ? 'QF' : 'R' + m * 2) + (i + 1));
+    return new Function('koGames', 'pairs', 'codeOf', destSrc + ' return destOf;')(koGames, pairs, codeOf);
+  };
+  // Seeded 1v4 / 2v3 while the knockout has not been created yet.
+  const seeded = [[{ team: { id: 's1' } }, { team: { id: 's4' } }], [{ team: { id: 's2' } }, { team: { id: 's3' } }]];
+  check('no knockout yet -> labels come from the seeding',
+    destOf([], seeded), { s1: 'SF1', s4: 'SF1', s2: 'SF2', s3: 'SF2' });
+  // The organiser re-paired the semi-finals by hand: 1v2 and 3v4.
+  const repaired = [
+    { round: 0, idx: 0, a: 's4', b: 's3' },
+    { round: 0, idx: 1, a: 's2', b: 's1' }
+  ];
+  check('knockout on the board -> labels follow the real games',
+    destOf(repaired, seeded), { s4: 'SF1', s3: 'SF1', s2: 'SF2', s1: 'SF2' });
+  check('later rounds do not overwrite the first-round labels',
+    destOf([...repaired, { round: 1, idx: 0, a: 's4', b: 's2' }], seeded),
+    { s4: 'SF1', s3: 'SF1', s2: 'SF2', s1: 'SF2' });
+  check('a bye leaves the other side labelled',
+    destOf([{ round: 0, idx: 0, a: 's1', b: null }, { round: 0, idx: 1, a: 's2', b: 's3' }], seeded),
+    { s1: 'SF1', s2: 'SF2', s3: 'SF2' });
+  // With a single first-round game that round is the final, and is labelled as such.
+  check('a two-team knockout labels its one game FINAL',
+    destOf([{ round: 0, idx: 0, a: 's1', b: 's2' }], seeded), { s1: 'FINAL', s2: 'FINAL' });
+  check('four first-round games are quarter-finals', Object.values(destOf(
+    [0, 1, 2, 3].map(i => ({ round: 0, idx: i, a: 'x' + i, b: 'y' + i })), seeded)),
+    ['QF1', 'QF1', 'QF2', 'QF2', 'QF3', 'QF3', 'QF4', 'QF4']);
+
+  // ---- the cloud push refuses to overwrite progress it has not seen ----
+  const Push = eval('(class {' + block(src, 'playedCount(games) {') + block(src, 'async pushSb() {') + '})');
+  const pusher = (state, remote, sbSeen) => {
+    const p = new Push();
+    p.sb = { url: 'x', key: 'y' };
+    p.state = state; p.sbSeen = sbSeen; p.devId = 'me';
+    p.pushed = false; p.adopted = null;
+    p.pullSb = async () => remote;
+    p.persistData = () => state;
+    p.mergeRemote = d => d;
+    p.setState = d => { p.adopted = d; };
+    p.sbFetch = async () => { p.pushed = true; return { ok: true, json: async () => [{ updated_at: 'new' }] }; };
+    return p;
+  };
+  const games = n => Array.from({ length: n }, () => ({ status: 'done' }));
+  const state = n => ({ teams: [{ id: 't1' }], games: games(n), meta: { code: 'ABC' } });
+
+  check('played counts done and bye, not scheduled', new Push().playedCount(
+    [{ status: 'done' }, { status: 'bye' }, { status: 'sched' }, { status: 'live' }]), 2);
+
+  await (async () => {
+    // A tournament with no teams is never pushed - this is the mistyped join code.
+    const empty = pusher({ teams: [], games: [], meta: { code: 'NOPE' } }, null, undefined);
+    await empty.pushSb();
+    check('a teamless tournament is never pushed', empty.pushed, false);
+
+    // A device left behind must not put its stale draw over a played-out stage.
+    const stale = pusher(state(8), { updated_at: 'newer', data: { teams: [{}], games: games(18) } }, 'older');
+    await stale.pushSb();
+    check('a stale device does not overwrite more progress', stale.pushed, false);
+    check('it takes the server copy instead', stale.adopted !== null, true);
+    check('and remembers the version it now has', stale.sbSeen, 'newer');
+
+    // In sync: correcting a finished game lowers the count and must still push.
+    const editing = pusher(state(17), { updated_at: 'same', data: { teams: [{}], games: games(18) } }, 'same');
+    await editing.pushSb();
+    check('an in-sync device may still lower the count', editing.pushed, true);
+
+    // Unseen but not ahead: nothing to protect, push normally.
+    const level = pusher(state(18), { updated_at: 'newer', data: { teams: [{}], games: games(18) } }, 'older');
+    await level.pushSb();
+    check('unseen but not ahead still pushes', level.pushed, true);
+
+    // First write of a brand new tournament.
+    const fresh = pusher(state(0), null, undefined);
+    await fresh.pushSb();
+    check('a new tournament with teams creates its row', fresh.pushed, true);
+  })();
+
   // ---- knockout seeding is untouched: 1v8, 4v5, 2v7, 3v6 ----
   const pairSrc = span(src, 'const rawPairs = [];', 'const pairs = order.map(i => rawPairs[i]);');
   const seedPairs = (knockout, count) => {
@@ -444,7 +523,7 @@ function report(error) {
 
 fetch(BUNDLE)
   .then(r => r.text())
-  .then(text => { run(text); report(null); })
+  .then(text => run(text).then(() => report(null)))
   .catch(err => report(err));
 </script>
 </body>
